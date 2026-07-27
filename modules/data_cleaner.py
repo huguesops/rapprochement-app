@@ -11,12 +11,12 @@ from modules.utils import (
 )
 
 
-def nettoyer_releve(df: pd.DataFrame, nom_fichier: str) -> pd.DataFrame:
+def nettoyer_releve(df: pd.DataFrame, nom_fichier: str) -> pd.DataFrame | None:
     """
     Nettoie et normalise un relevé bancaire.
     Détecte automatiquement le format (UNICS, FH, etc.) et applique les transformations.
     """
-    if df is None or df.empty:
+    if df is None or (hasattr(df, 'empty') and df.empty):
         return None
     
     df = df.copy()
@@ -219,12 +219,19 @@ def _nettoyer_format_generique(df: pd.DataFrame, nom_fichier: str) -> pd.DataFra
     return result
 
 
-def nettoyer_gl(df: pd.DataFrame, nom_entite: str) -> pd.DataFrame:
+def nettoyer_gl(df: pd.DataFrame, nom_entite: str) -> pd.DataFrame | None:
     """
     Nettoie et normalise un Grand Livre Odoo 18.
     Colonnes attendues: Date | Compte | Libellé | Débit | Crédit | Solde | Pièce/Journal
     """
-    if df is None or df.empty:
+    if df is None:
+        return None
+    
+    # Gérer le cas où df n'est pas vide mais n'a aucune colonne valide
+    try:
+        if hasattr(df, 'empty') and df.empty:
+            return None
+    except Exception:
         return None
     
     df = df.copy()
@@ -237,7 +244,7 @@ def nettoyer_gl(df: pd.DataFrame, nom_entite: str) -> pd.DataFrame:
     for c in df.columns:
         if 'date' in c:
             col_map[c] = 'date'
-        elif 'compte' in c or 'account' in c or 'compte' in c:
+        elif 'compte' in c or 'account' in c:
             col_map[c] = 'compte'
         elif 'libell' in c or 'libelle' in c or 'label' in c or 'name' in c:
             col_map[c] = 'libelle'
@@ -252,8 +259,9 @@ def nettoyer_gl(df: pd.DataFrame, nom_entite: str) -> pd.DataFrame:
     
     df = df.rename(columns=col_map)
     
-    # Date
-    if 'date' in df.columns:
+    # Date — forcer un booléen Python pour éviter "truth value of a Series is ambiguous"
+    has_date_col = bool('date' in df.columns)
+    if has_date_col:
         result['date'] = df['date'].apply(parser_date_flexible)
     else:
         result['date'] = None
@@ -291,8 +299,9 @@ def nettoyer_gl(df: pd.DataFrame, nom_entite: str) -> pd.DataFrame:
     # Montant net (crédit - débit pour sens unique)
     result['montant'] = result['credit'] - result['debit']
     
-    # Pièce
-    if 'piece' in df.columns:
+    # Pièce — forcer un booléen Python
+    has_piece_col = bool('piece' in df.columns)
+    if has_piece_col:
         result['piece'] = df['piece'].astype(str).str.strip()
     else:
         result['piece'] = ''
