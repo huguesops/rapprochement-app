@@ -1,9 +1,8 @@
-streamlit==1.37.0
-pandas==2.1.4
-openpyxl==3.11.0
-python-dateutil==2.8.2
-reportlab==4.0.9
-xlsxwriter==3.1.9
-pytz==2024.1
-plotly==5.18.0
-numpy==1.26.4
+streamlit
+pandas
+openpyxl
+python-dateutil
+reportlab
+xlsxwriter
+pytz
+plotly
