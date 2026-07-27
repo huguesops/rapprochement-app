@@ -26,7 +26,7 @@ st.set_page_config(
 # Initialisation des modules
 from modules.db_manager import (
     init_db, get_active_session, get_all_mappages,
-    get_matches, get_suspens, get_stats, add_history,
+    get_matches, get_suspens, get_stats, get_stats_for_entite, add_history,
     update_suspens, delete_suspens
 )
 from modules.data_loader import charger_releve, charger_gl
