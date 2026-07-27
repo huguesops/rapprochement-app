@@ -11,6 +11,30 @@ from modules.utils import (
 )
 
 
+def _is_null(value) -> bool:
+    """Retourne True si la valeur est nulle/NaN/None, sans risquer une erreur de Series."""
+    try:
+        if value is None:
+            return True
+        if isinstance(value, float) and np.isnan(value):
+            return True
+        if isinstance(value, pd.Series):
+            return False
+        return False
+    except Exception:
+        return False
+
+
+def _safe_str(value) -> str:
+    """Convertit proprement en chaîne, même si value est une Series."""
+    try:
+        if isinstance(value, pd.Series):
+            return ""
+        return str(value)
+    except Exception:
+        return ""
+
+
 def nettoyer_releve(df: pd.DataFrame, nom_fichier: str) -> pd.DataFrame | None:
     """
     Nettoie et normalise un relevé bancaire.
@@ -68,14 +92,14 @@ def _nettoyer_format_unics(df: pd.DataFrame, nom_fichier: str) -> pd.DataFrame:
     # Montant: positif = crédit, négatif = débit
     if 'montant' in df.columns:
         result['montant'] = df['montant'].apply(
-            lambda x: normaliser_montant_str(str(x)) if pd.notna(x) else 0.0
+            lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
         )
         result['debit'] = result['montant'].apply(lambda x: abs(x) if x < 0 else 0.0)
         result['credit'] = result['montant'].apply(lambda x: x if x > 0 else 0.0)
     
     if 'solde' in df.columns:
         result['solde'] = df['solde'].apply(
-            lambda x: normaliser_montant_str(str(x)) if pd.notna(x) else 0.0
+            lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
         )
     
     result['banque'] = 'UNICS'
@@ -119,14 +143,14 @@ def _nettoyer_format_fh(df: pd.DataFrame, nom_fichier: str) -> pd.DataFrame:
     # Normaliser débit/crédit (avec séparateurs de milliers)
     if 'debit' in df.columns:
         result['debit'] = df['debit'].apply(
-            lambda x: normaliser_montant_str(str(x)) if pd.notna(x) else 0.0
+            lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
         )
     else:
         result['debit'] = 0.0
     
     if 'credit' in df.columns:
         result['credit'] = df['credit'].apply(
-            lambda x: normaliser_montant_str(str(x)) if pd.notna(x) else 0.0
+            lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
         )
     else:
         result['credit'] = 0.0
@@ -136,7 +160,7 @@ def _nettoyer_format_fh(df: pd.DataFrame, nom_fichier: str) -> pd.DataFrame:
     
     if 'solde' in df.columns:
         result['solde'] = df['solde'].apply(
-            lambda x: normaliser_montant_str(str(x)) if pd.notna(x) else 0.0
+            lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
         )
     
     result['banque'] = 'FINANCIAL HOUSE'
@@ -187,20 +211,20 @@ def _nettoyer_format_generique(df: pd.DataFrame, nom_fichier: str) -> pd.DataFra
     
     if montant_col:
         result['montant'] = df[montant_col].apply(
-            lambda x: normaliser_montant_str(str(x)) if pd.notna(x) else 0.0
+            lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
         )
         result['debit'] = result['montant'].apply(lambda x: abs(x) if x < 0 else 0.0)
         result['credit'] = result['montant'].apply(lambda x: x if x > 0 else 0.0)
     elif debit_col or credit_col:
         if debit_col:
             result['debit'] = df[debit_col].apply(
-                lambda x: normaliser_montant_str(str(x)) if pd.notna(x) else 0.0
+                lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
             )
         else:
             result['debit'] = 0.0
         if credit_col:
             result['credit'] = df[credit_col].apply(
-                lambda x: normaliser_montant_str(str(x)) if pd.notna(x) else 0.0
+                lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
             )
         else:
             result['credit'] = 0.0
@@ -272,10 +296,10 @@ def nettoyer_gl(df: pd.DataFrame, nom_entite: str) -> pd.DataFrame | None:
     else:
         result['compte'] = ''
     
-    # Libellé
+    # Libellé — test booléen explicite sans pd.notna
     if 'libelle' in df.columns:
         result['libelle'] = df['libelle'].apply(
-            lambda x: nettoyer_libelle(str(x)) if pd.notna(x) else ''
+            lambda x: nettoyer_libelle(_safe_str(x)) if _is_null(x) is False else ''
         )
     else:
         result['libelle'] = ''
@@ -283,7 +307,7 @@ def nettoyer_gl(df: pd.DataFrame, nom_entite: str) -> pd.DataFrame | None:
     # Débit
     if 'debit' in df.columns:
         result['debit'] = df['debit'].apply(
-            lambda x: normaliser_montant_str(str(x)) if pd.notna(x) else 0.0
+            lambda x: normaliser_montant_str(_safe_str(x)) if _is_null(x) is False else 0.0
         )
     else:
         result['debit'] = 0.0
@@ -291,7 +315,7 @@ def nettoyer_gl(df: pd.DataFrame, nom_entite: str) -> pd.DataFrame | None:
     # Crédit
     if 'credit' in df.columns:
         result['credit'] = df['credit'].apply(
-            lambda x: normaliser_montant_str(str(x)) if pd.notna(x) else 0.0
+            lambda x: normaliser_montant_str(_safe_str(x)) if _is_null(x) is False else 0.0
         )
     else:
         result['credit'] = 0.0
