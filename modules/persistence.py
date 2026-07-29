@@ -99,8 +99,26 @@ def restaurer_session(session_id) -> tuple[dict, dict]:
     gls = {}
     releves = {}
 
-    for f in get_fichiers_charges(session_id):
-        chemin = Path(f["chemin_donnees"])
+    # Récupération défensive de la liste des fichiers en DB
+    try:
+        fichiers = get_fichiers_charges(session_id)
+    except Exception:
+        fichiers = []
+
+    if not fichiers:
+        return gls, releves
+
+    for f in fichiers:
+        # S'assure que chaque élément est un dict et contient le chemin attendu
+        if not isinstance(f, dict):
+            continue
+
+        # Supporter plusieurs noms possibles pour la colonne chemin (robustesse)
+        chemin_str = f.get("chemin_donnees") or f.get("chemin") or f.get("chemin_donnee")
+        if not chemin_str:
+            continue
+
+        chemin = Path(chemin_str)
         if not chemin.exists():
             continue
         try:
@@ -112,21 +130,25 @@ def restaurer_session(session_id) -> tuple[dict, dict]:
         if not isinstance(df, pd.DataFrame):
             continue
 
-        if f["type_fichier"] == "gl":
-            df.attrs["nom_fichier"] = f["nom_fichier"]
-            df.attrs["entite"] = f["entite"]
+        if f.get("type_fichier") == "gl":
+            df.attrs["nom_fichier"] = f.get("nom_fichier", "")
+            df.attrs["entite"] = f.get("entite", "")
             df.attrs["nb_lignes"] = len(df)
-            gls[f["entite"]] = df
+            gls[f.get("entite", "")] = df
         else:
-            df.attrs["nom_fichier"] = f["nom_fichier"]
-            df.attrs["banque"] = f["banque"]
-            df.attrs["periode"] = f["periode"]
+            df.attrs["nom_fichier"] = f.get("nom_fichier", "")
+            df.attrs["banque"] = f.get("banque", "")
+            df.attrs["periode"] = f.get("periode", "")
             df.attrs["nb_lignes"] = len(df)
-            releves[f["nom_fichier"]] = df
+            releves[f.get("nom_fichier", "")] = df
 
     return gls, releves
 
 
 def a_des_fichiers_persistes(session_id) -> bool:
     """Vérifie rapidement si une session a des fichiers persistés (sans les charger)."""
-    return len(get_fichiers_charges(session_id)) > 0
+    try:
+        fichiers = get_fichiers_charges(session_id)
+        return bool(fichiers)
+    except Exception:
+        return False
