@@ -60,42 +60,94 @@ def nettoyer_releve(df: pd.DataFrame, nom_fichier: str) -> pd.DataFrame | None:
                 any('crédit' in c or 'credit' in c for c in df.columns)
     
     if format_fh or 'FH' in nom:
-        return _nettoyer_format_fh(df, nom_fichier)
+        try:
+            result = _nettoyer_format_fh(df, nom_fichier)
+        except Exception:
+            result = _nettoyer_format_generique(df, nom_fichier)
     elif format_unics or 'UNICS' in nom:
-        return _nettoyer_format_unics(df, nom_fichier)
+        try:
+            result = _nettoyer_format_unics(df, nom_fichier)
+        except Exception:
+            result = _nettoyer_format_generique(df, nom_fichier)
     else:
         # Format générique
-        return _nettoyer_format_generique(df, nom_fichier)
+        result = _nettoyer_format_generique(df, nom_fichier)
+
+    # Filet de sécurité: quel que soit le format détecté (même un format
+    # futur/inconnu mal reconnu), on garantit que les colonnes essentielles
+    # existent toujours pour que le moteur de rapprochement ne plante jamais.
+    if result is not None:
+        if 'montant' not in result.columns:
+            result['montant'] = 0.0
+        result['montant'] = pd.to_numeric(result['montant'], errors='coerce').fillna(0.0)
+        if 'debit' not in result.columns:
+            result['debit'] = result['montant'].apply(lambda x: abs(x) if x < 0 else 0.0)
+        if 'credit' not in result.columns:
+            result['credit'] = result['montant'].apply(lambda x: x if x > 0 else 0.0)
+        if 'libelle' not in result.columns:
+            result['libelle'] = ''
+        if 'date' not in result.columns:
+            result['date'] = None
+
+    return result
 
 
 def _nettoyer_format_unics(df: pd.DataFrame, nom_fichier: str) -> pd.DataFrame:
-    """Nettoie le format UNICS: Date | Libellé | Montant | Solde courant."""
+    """
+    Nettoie le format UNICS.
+    Deux variantes existent en pratique:
+      - Date | Libellé | Montant | Solde courant  (montant signé, +crédit/-débit)
+      - Date | ... | Debit | Credit | Balance      (colonnes séparées, cas réel observé)
+    """
     result = pd.DataFrame()
     
-    # Renommer colonnes
+    # Renommer colonnes (ordre important: tester les motifs les plus
+    # spécifiques d'abord pour éviter les collisions, ex: "Value Date"
+    # contient aussi "date" et ne doit pas écraser la colonne "Date" principale)
     col_map = {}
     for c in df.columns:
-        if 'date' in c:
+        if 'value' in c or 'valeur' in c:
+            continue  # date de valeur ignorée, pas utilisée pour le matching
+        elif 'date' in c and 'date' not in col_map.values():
             col_map[c] = 'date'
-        elif 'libell' in c or 'libelle' in c:
+        elif 'libell' in c or 'libelle' in c or 'particular' in c:
             col_map[c] = 'libelle'
         elif 'montant' in c:
             col_map[c] = 'montant'
-        elif 'solde' in c:
+        elif 'débit' in c or 'debit' in c:
+            col_map[c] = 'debit'
+        elif 'crédit' in c or 'credit' in c:
+            col_map[c] = 'credit'
+        elif 'solde' in c or 'balance' in c:
             col_map[c] = 'solde'
     df = df.rename(columns=col_map)
     
-    result['date_raw'] = df['date'].astype(str)
-    result['date'] = df['date'].apply(parser_date_flexible)
-    result['libelle'] = df['libelle'].apply(nettoyer_libelle)
+    result['date_raw'] = df['date'].astype(str) if 'date' in df.columns else ''
+    result['date'] = df['date'].apply(parser_date_flexible) if 'date' in df.columns else None
+    result['libelle'] = df['libelle'].apply(nettoyer_libelle) if 'libelle' in df.columns else ''
     
-    # Montant: positif = crédit, négatif = débit
     if 'montant' in df.columns:
+        # Variante 1: montant signé unique (+crédit / -débit)
         result['montant'] = df['montant'].apply(
             lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
         )
         result['debit'] = result['montant'].apply(lambda x: abs(x) if x < 0 else 0.0)
         result['credit'] = result['montant'].apply(lambda x: x if x > 0 else 0.0)
+    elif 'debit' in df.columns or 'credit' in df.columns:
+        # Variante 2: colonnes Débit/Crédit séparées (cas réel des relevés UNICS)
+        result['debit'] = df['debit'].apply(
+            lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
+        ) if 'debit' in df.columns else 0.0
+        result['credit'] = df['credit'].apply(
+            lambda x: normaliser_montant_str(str(x)) if not _is_null(x) else 0.0
+        ) if 'credit' in df.columns else 0.0
+        result['montant'] = result['credit'] - result['debit']
+    else:
+        # Aucune colonne de montant reconnue: on garantit quand même la colonne
+        # pour ne jamais faire planter le moteur de rapprochement en aval.
+        result['montant'] = 0.0
+        result['debit'] = 0.0
+        result['credit'] = 0.0
     
     if 'solde' in df.columns:
         result['solde'] = df['solde'].apply(
