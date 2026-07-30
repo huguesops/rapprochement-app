@@ -369,16 +369,25 @@ def save_fichier_charge(session_id, type_fichier, nom_fichier, chemin_donnees,
     """Enregistre (ou met à jour) la référence d'un fichier GL/relevé persisté sur disque."""
     conn = get_connection()
     try:
-        conn.execute(
-            """INSERT INTO fichiers_charges
-               (session_id, type_fichier, nom_fichier, entite, banque, periode, nb_lignes, chemin_donnees)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(session_id, type_fichier, nom_fichier)
-               DO UPDATE SET entite=excluded.entite, banque=excluded.banque,
-                             periode=excluded.periode, nb_lignes=excluded.nb_lignes,
-                             chemin_donnees=excluded.chemin_donnees, timestamp=CURRENT_TIMESTAMP""",
-            (session_id, type_fichier, nom_fichier, entite, banque, periode, nb_lignes, chemin_donnees)
-        )
+        existing = conn.execute(
+            "SELECT fichier_id FROM fichiers_charges WHERE session_id=? AND type_fichier=? AND nom_fichier=?",
+            (session_id, type_fichier, nom_fichier)
+        ).fetchone()
+
+        if existing:
+            conn.execute(
+                """UPDATE fichiers_charges
+                   SET entite=?, banque=?, periode=?, nb_lignes=?, chemin_donnees=?, timestamp=CURRENT_TIMESTAMP
+                   WHERE fichier_id=?""",
+                (entite, banque, periode, nb_lignes, chemin_donnees, existing['fichier_id'])
+            )
+        else:
+            conn.execute(
+                """INSERT INTO fichiers_charges
+                   (session_id, type_fichier, nom_fichier, entite, banque, periode, nb_lignes, chemin_donnees)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, type_fichier, nom_fichier, entite, banque, periode, nb_lignes, chemin_donnees)
+            )
         conn.commit()
     finally:
         conn.close()
