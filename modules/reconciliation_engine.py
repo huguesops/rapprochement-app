@@ -51,7 +51,19 @@ def run_reconciliation_for_entite(
     # S'assurer que les colonnes nécessaires existent
     releves = releves_entite.copy()
     gl = gl_entite.copy()
-    
+
+    # Filet de sécurité: des fichiers persistés avant un correctif de
+    # nettoyage (ou un format bancaire imprévu) peuvent arriver ici sans
+    # colonne 'montant'. On la garantit plutôt que de planter.
+    if 'montant' not in releves.columns:
+        releves['montant'] = 0.0
+        add_history(session_id, "RECONCILIATION_AVERTISSEMENT", entite,
+                   "Relevé sans colonne 'montant' détecté — réuploadez ce relevé pour corriger.")
+    if 'montant' not in gl.columns:
+        gl['montant'] = 0.0
+    releves['montant'] = pd.to_numeric(releves['montant'], errors='coerce').fillna(0.0)
+    gl['montant'] = pd.to_numeric(gl['montant'], errors='coerce').fillna(0.0)
+
     # Ajouter montant_abs si pas présent
     if 'montant_abs' not in releves.columns:
         releves['montant_abs'] = releves['montant'].abs()
