@@ -266,8 +266,8 @@ def save_suspens(session_id, entite, type_suspens, source, date_operation, libel
         conn.close()
 
 
-def update_suspens(suspens_id, motif=None, observations=None, statut=None):
-    """Met à jour un suspens (motif, observations, statut)."""
+def update_suspens(suspens_id, motif=None, observations=None, statut=None, entite=None):
+    """Met à jour un suspens (motif, observations, statut, et/ou réattribution d'entité)."""
     conn = get_connection()
     try:
         updates = []
@@ -281,6 +281,9 @@ def update_suspens(suspens_id, motif=None, observations=None, statut=None):
         if statut is not None:
             updates.append("statut=?")
             params.append(statut)
+        if entite is not None:
+            updates.append("entite=?")
+            params.append(entite)
         if updates:
             params.append(suspens_id)
             conn.execute(
