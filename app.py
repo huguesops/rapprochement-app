@@ -38,7 +38,10 @@ from modules.db_manager import (
     update_suspens, delete_suspens
 )
 from modules.data_loader import charger_releve, charger_gl
-from modules.reconciliation_engine import run_global_reconciliation, NON_DETERMINEE
+from modules.reconciliation_engine import (
+    run_global_reconciliation,
+    NON_DETERMINEE,
+)
 from modules.reporting import afficher_boutons_exports
 from modules.utils import formater_montant, formater_date, detecter_periode
 from modules import persistence
