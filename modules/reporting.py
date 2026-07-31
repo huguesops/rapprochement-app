@@ -19,10 +19,10 @@ from reportlab.platypus import (
 from reportlab.lib.units import mm, cm
 
 from modules.db_manager import (
-    get_matches, get_suspens, get_stats, get_stats_for_entite,
-    get_all_mappages
+    get_matches, get_suspens, get_stats, get_stats_for_entite
 )
 from modules.utils import formater_montant, formater_date
+from modules.reconciliation_engine import NON_DETERMINEE
 
 
 def export_excel_detail(session_id: int) -> BytesIO:
@@ -46,12 +46,14 @@ def export_excel_detail(session_id: int) -> BytesIO:
         # Sheet Synthèse
         stats = get_stats(session_id)
         synth_data = []
-        entites = ['DISTRIBUTION', 'NUTRITION', 'SERVICES', 'ÉLEVAGE']
+        entites = ['DISTRIBUTION', 'NUTRITION', 'SERVICES', 'ÉLEVAGE', NON_DETERMINEE]
         
         for entite in entites:
             nb_matches = stats.get('matches_par_entite', {}).get(entite, 0)
             nb_suspens = stats.get('suspens_par_entite', {}).get(entite, 0)
             total = nb_matches + nb_suspens
+            if total == 0:
+                continue  # ne pas polluer la synthèse si rien à signaler pour ce panier
             taux = round(nb_matches / max(total, 1) * 100, 1) if total > 0 else 0
             synth_data.append([entite, total, nb_matches, nb_suspens, f"{taux}%"])
         
@@ -77,7 +79,8 @@ def export_excel_detail(session_id: int) -> BytesIO:
         for col_num, value in enumerate(df_synth.columns.values):
             ws_synth.write(1, col_num, value, header_format)
         
-        # Sheets par entité
+        # Sheets par entité (+ panier "non déterminée" pour les opérations
+        # relevé qu'aucun GL n'a permis d'attribuer automatiquement)
         for entite in entites:
             # Matches
             matches = get_matches(session_id, entite)
@@ -207,13 +210,15 @@ def generer_pdf_rapport(session_id: int) -> BytesIO:
     # Détail par entité
     elements.append(Paragraph("Détail par Entité", heading_style))
     
-    entites = ['DISTRIBUTION', 'NUTRITION', 'SERVICES', 'ÉLEVAGE']
+    entites = ['DISTRIBUTION', 'NUTRITION', 'SERVICES', 'ÉLEVAGE', NON_DETERMINEE]
     detail_data = [['Entité', 'Appairés', 'Suspens', 'Total', 'Taux']]
     
     for entite in entites:
         nb_matches = stats.get('matches_par_entite', {}).get(entite, 0)
         nb_suspens = stats.get('suspens_par_entite', {}).get(entite, 0)
         total_e = nb_matches + nb_suspens
+        if total_e == 0:
+            continue
         taux_e = round(nb_matches / max(total_e, 1) * 100, 1)
         detail_data.append([
             entite, str(nb_matches), str(nb_suspens),
