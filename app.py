@@ -2,10 +2,17 @@
 Application Streamlit de Rapprochement Bancaire
 Groupe SKAB Cameroun | Multi-Banques | Multi-Entités | 2025-2026
 
+IMPORTANT — architecture réelle: les 4 entités partagent les mêmes comptes
+bancaires. Un relevé peut donc contenir des opérations de plusieurs
+entités mélangées: il n'y a PAS de mappage manuel "ce relevé = cette
+entité". L'entité de chaque opération est déterminée automatiquement par
+le rapprochement lui-même (comparaison de chaque ligne de relevé aux 4 GL
+à la fois — voir modules/reconciliation_engine.py).
+
 5 onglets:
   1. Upload & Configuration
-  2. Mappage Relevés → Entités
-  3. Rapprochement par Entité
+  2. Rapprochement Global (détection automatique de l'entité)
+  3. Rapprochement par Entité (revue + investigation des suspens)
   4. Synthèse & Ventilation
   5. Exports & Rapports
 """
@@ -25,17 +32,18 @@ st.set_page_config(
 
 # Initialisation des modules
 from modules.db_manager import (
-    init_db, get_active_session, get_all_mappages, get_all_sessions,
+    init_db, get_active_session, get_all_sessions,
     get_session, create_session,
     get_matches, get_suspens, get_stats, get_stats_for_entite, add_history,
     update_suspens, delete_suspens
 )
 from modules.data_loader import charger_releve, charger_gl
-from modules.releve_mapper import afficher_interface_mappage
-from modules.reconciliation_engine import run_reconciliation_for_entite, run_all_reconciliations
+from modules.reconciliation_engine import run_global_reconciliation, NON_DETERMINEE
 from modules.reporting import afficher_boutons_exports
 from modules.utils import formater_montant, formater_date, detecter_periode
 from modules import persistence
+
+ENTITES_GL = ['DISTRIBUTION', 'NUTRITION', 'SERVICES', 'ÉLEVAGE']
 
 # Initialiser la base de données au démarrage
 if 'db_initialized' not in st.session_state:
@@ -83,8 +91,6 @@ if 'gls' not in st.session_state or 'releves' not in st.session_state:
     if gls_restaures or releves_restaures:
         st.session_state.donnees_restaurees = True
 
-if 'mappages_appliques' not in st.session_state:
-    st.session_state.mappages_appliques = False
 if 'reconciliation_results' not in st.session_state:
     st.session_state.reconciliation_results = {}
 if 'tolerance_jours' not in st.session_state:
@@ -117,7 +123,7 @@ with st.sidebar:
 
     with st.expander("🔀 Changer / créer une session"):
         st.caption(
-            "Chaque session est isolée: ses fichiers, mappages et rapprochements "
+            "Chaque session est isolée: ses fichiers, appairages et suspens "
             "ne sont visibles que par ceux qui ouvrent ce même lien de session. "
             "Partagez l'URL de la page à vos collègues pour travailler ensemble "
             "sur la même session."
@@ -142,7 +148,7 @@ with st.sidebar:
             if st.button("↪️ Ouvrir cette session", use_container_width=True):
                 if session_choisie != st.session_state.session_id:
                     st.query_params["session"] = str(session_choisie)
-                    for key in ['session_id', 'gls', 'releves', 'mappages_appliques', 'reconciliation_results']:
+                    for key in ['session_id', 'gls', 'releves', 'reconciliation_results']:
                         st.session_state.pop(key, None)
                     st.rerun()
 
@@ -153,7 +159,7 @@ with st.sidebar:
         if st.button("➕ Créer une nouvelle session", use_container_width=True):
             nouveau_id = create_session(nom=nouveau_nom.strip())
             st.query_params["session"] = str(nouveau_id)
-            for key in ['session_id', 'gls', 'releves', 'mappages_appliques', 'reconciliation_results']:
+            for key in ['session_id', 'gls', 'releves', 'reconciliation_results']:
                 st.session_state.pop(key, None)
             st.rerun()
 
@@ -183,16 +189,16 @@ with st.sidebar:
         )
 
     # Bouton réinitialisation
-    st.caption("⚠️ Efface tous les fichiers chargés (GL + relevés), les mappages, "
+    st.caption("⚠️ Efface tous les fichiers chargés (GL + relevés), "
               "les appairages et les suspens de **cette session**. Irréversible. "
               "(Pour repartir de zéro sans toucher au travail existant, créez plutôt "
               "une nouvelle session ci-dessus.)")
     if st.button("🗑️ Vider cette session", use_container_width=True):
         # Effacer les fichiers persistés sur disque + en DB
         persistence.reinitialiser_session(st.session_state.session_id)
-        for key in ['gls', 'releves', 'mappages_appliques', 'reconciliation_results']:
+        for key in ['gls', 'releves', 'reconciliation_results']:
             if key in st.session_state:
-                st.session_state[key] = {} if key != 'mappages_appliques' else False
+                st.session_state[key] = {}
         # Forcer le remontage des widgets file_uploader (sinon Streamlit garde
         # le fichier précédemment sélectionné visible dans le widget)
         st.session_state.uploader_reset_counter += 1
@@ -203,8 +209,8 @@ with st.sidebar:
 # ===== TABS PRINCIPAUX =====
 tabs = st.tabs([
     "📂 Upload & Configuration",
-    "🗺️ Mappage Relevés → Entités",
-    "🔍 Rapprochement par Entité",
+    "🔍 Rapprochement Global",
+    "🔎 Rapprochement par Entité",
     "📊 Synthèse & Ventilation",
     "📤 Exports & Rapports"
 ])
@@ -369,7 +375,7 @@ with tabs[0]:
         st.metric("Total écritures GL", total_gl)
 
     if len(st.session_state.gls) == 4 and len(st.session_state.releves) > 0:
-        st.success("✅ Prêt pour le mappage → Allez à l'onglet 2")
+        st.success("✅ Prêt pour le rapprochement → Allez à l'onglet 2")
     else:
         if len(st.session_state.gls) < 4:
             st.warning(f"⚠️ {4 - len(st.session_state.gls)} GL(s) manquant(s). Chargez les 4 GLs.")
@@ -378,126 +384,178 @@ with tabs[0]:
 
 
 # ============================================================
-# TAB 2: MAPPAGE RELEVÉS → ENTITÉS
+# TAB 2: RAPPROCHEMENT GLOBAL (détection automatique de l'entité)
 # ============================================================
 with tabs[1]:
+    st.header("🔍 Rapprochement Global")
+    st.caption(
+        "Les 4 entités du Groupe SKAB partagent les mêmes comptes bancaires: un "
+        "relevé peut donc contenir des opérations de plusieurs entités mélangées. "
+        "Pas besoin de les trier manuellement — chaque ligne de relevé est comparée "
+        "directement aux 4 Grands Livres, et l'entité est déduite automatiquement "
+        "de celui avec lequel elle correspond."
+    )
+
     if len(st.session_state.releves) == 0:
         st.warning("⚠️ Veuillez d'abord charger des relevés bancaires dans l'onglet 1.")
+    elif len(st.session_state.gls) == 0:
+        st.warning("⚠️ Veuillez d'abord charger au moins un Grand Livre dans l'onglet 1.")
     else:
-        afficher_interface_mappage(st.session_state.releves, st.session_state.gls, st.session_state.session_id)
+        col_go1, col_go2 = st.columns([3, 1])
+        with col_go2:
+            lancer = st.button("🚀 Lancer le rapprochement", type="primary", use_container_width=True)
 
-        # Lancer le matching si demandé
-        if st.session_state.get('mappages_appliques', False):
-            with st.spinner("🔍 Lancement du matching pour toutes les entités..."):
-                results = run_all_reconciliations(
+        if lancer:
+            with st.spinner("🔍 Comparaison de tous les relevés aux 4 Grands Livres..."):
+                resultats = run_global_reconciliation(
                     st.session_state.gls,
                     st.session_state.releves,
                     st.session_state.session_id,
                     st.session_state.tolerance_jours,
                     st.session_state.seuil_levenshtein / 100.0
                 )
-                st.session_state.reconciliation_results = results
-                st.success("✅ Matching terminé! Consultez les résultats dans l'onglet 3.")
-                st.session_state.mappages_appliques = True
+                st.session_state.reconciliation_results = resultats
+                st.success("✅ Rapprochement terminé ! Consultez le détail par entité dans l'onglet 3.")
+
+        stats = get_stats(st.session_state.session_id)
+        if stats.get('total_matches', 0) > 0 or stats.get('total_suspens', 0) > 0:
+            st.divider()
+            st.subheader("📊 Résultat du dernier rapprochement")
+
+            total_releve_lignes = sum(len(df) for df in st.session_state.releves.values() if df is not None)
+            nb_non_determinees = stats.get('suspens_par_entite', {}).get(NON_DETERMINEE, 0)
+
+            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+            with col_r1:
+                st.metric("📋 Lignes de relevé", total_releve_lignes)
+            with col_r2:
+                st.metric("✅ Appairées (toutes entités)", stats.get('total_matches', 0))
+            with col_r3:
+                st.metric("⚠️ Suspens (toutes entités)", stats.get('total_suspens', 0))
+            with col_r4:
+                st.metric("❓ Entité non déterminée", nb_non_determinees)
+
+            # Répartition par entité
+            recap = []
+            for entite in ENTITES_GL:
+                nb_m = stats.get('matches_par_entite', {}).get(entite, 0)
+                nb_s = stats.get('suspens_par_entite', {}).get(entite, 0)
+                recap.append({'Entité': entite, 'Opérations attribuées': nb_m, 'Suspens (GL orphelin)': nb_s})
+            recap.append({
+                'Entité': '❓ Non déterminée',
+                'Opérations attribuées': 0,
+                'Suspens (GL orphelin)': nb_non_determinees
+            })
+            st.dataframe(pd.DataFrame(recap), use_container_width=True, hide_index=True)
+
+            if nb_non_determinees > 0:
+                st.info(
+                    f"ℹ️ {nb_non_determinees} opération(s) de relevé n'ont correspondu à aucun des 4 GL. "
+                    f"Ouvrez l'onglet 3, sélectionnez « ❓ Non déterminée », et assignez-les manuellement "
+                    f"à la bonne entité si vous la connaissez."
+                )
+        else:
+            st.info("Cliquez sur « 🚀 Lancer le rapprochement » pour démarrer.")
 
 
 # ============================================================
 # TAB 3: RAPPROCHEMENT PAR ENTITÉ
 # ============================================================
 with tabs[2]:
-    st.header("🔍 Rapprochement par Entité")
+    st.header("🔎 Rapprochement par Entité")
 
     if not st.session_state.gls:
         st.warning("⚠️ Veuillez d'abord charger les GLs dans l'onglet 1.")
     elif not st.session_state.releves:
         st.warning("⚠️ Veuillez d'abord charger les relevés dans l'onglet 1.")
     else:
-        # Sélecteur d'entité
-        entites_disponibles = list(st.session_state.gls.keys())
-        if not entites_disponibles:
-            st.warning("Aucune entité disponible.")
-        else:
-            entite_selectionnee = st.selectbox(
-                "Sélectionnez une entité",
-                options=entites_disponibles,
-                key="entite_select"
+        # Sélecteur d'entité (+ panier "non déterminée" pour les opérations
+        # qu'aucun GL n'a permis d'attribuer automatiquement)
+        entites_disponibles = list(st.session_state.gls.keys()) + [NON_DETERMINEE]
+
+        entite_selectionnee = st.selectbox(
+            "Sélectionnez une entité",
+            options=entites_disponibles,
+            format_func=lambda e: f"❓ {e}" if e == NON_DETERMINEE else e,
+            key="entite_select"
+        )
+
+        col_match1, col_match2 = st.columns([3, 1])
+        with col_match1:
+            st.caption(
+                "L'entité est déterminée automatiquement lors du rapprochement global "
+                "(onglet 2). Relancez-le depuis ce bouton si vous venez de charger de "
+                "nouveaux fichiers."
             )
+        with col_match2:
+            if st.button("🔄 Relancer le rapprochement global", use_container_width=True):
+                with st.spinner("🔍 Comparaison de tous les relevés aux 4 Grands Livres..."):
+                    resultats = run_global_reconciliation(
+                        st.session_state.gls,
+                        st.session_state.releves,
+                        st.session_state.session_id,
+                        st.session_state.tolerance_jours,
+                        st.session_state.seuil_levenshtein / 100.0
+                    )
+                    st.session_state.reconciliation_results = resultats
+                    st.success("✅ Rapprochement terminé !")
+                    st.rerun()
 
-            # Bouton pour lancer/re-lancer le matching
-            col_match1, col_match2 = st.columns([3, 1])
-            with col_match2:
-                if st.button("🔄 Lancer le matching", type="primary", use_container_width=True):
-                    with st.spinner(f"🔍 Matching pour {entite_selectionnee}..."):
-                        # Récupérer les relevés mappés à cette entité
-                        mappages = get_all_mappages(st.session_state.session_id)
-                        releves_entite_list = []
-                        for m in mappages:
-                            if m['entite_assignee'] == entite_selectionnee:
-                                if m['releve_name'] in st.session_state.releves:
-                                    releves_entite_list.append(st.session_state.releves[m['releve_name']])
+        is_non_determinee = (entite_selectionnee == NON_DETERMINEE)
+        gl_df = st.session_state.gls.get(entite_selectionnee)
 
-                        if releves_entite_list:
-                            releves_combines = pd.concat(releves_entite_list, ignore_index=True)
-                        else:
-                            releves_combines = pd.DataFrame()
+        if not is_non_determinee and (gl_df is None or gl_df.empty):
+            st.warning(f"Aucun GL chargé pour {entite_selectionnee}.")
+        else:
+            # Récupérer les résultats depuis la DB
+            matches = [] if is_non_determinee else get_matches(st.session_state.session_id, entite_selectionnee)
+            suspens = get_suspens(st.session_state.session_id, entite_selectionnee)
 
-                        result = run_reconciliation_for_entite(
-                            entite_selectionnee,
-                            releves_combines,
-                            st.session_state.gls.get(entite_selectionnee),
-                            st.session_state.session_id,
-                            st.session_state.tolerance_jours,
-                            st.session_state.seuil_levenshtein / 100.0
-                        )
-                        st.session_state.reconciliation_results[entite_selectionnee] = result
-                        st.success("✅ Matching terminé!")
-                        st.rerun()
-
-            # Afficher les résultats
-            gl_df = st.session_state.gls.get(entite_selectionnee)
-            if gl_df is None or gl_df.empty:
-                st.warning(f"Aucun GL chargé pour {entite_selectionnee}.")
+            # Statistiques
+            if is_non_determinee:
+                nb_matches = 0
+                nb_suspens = len(suspens)
             else:
-                # Récupérer les résultats depuis la DB
-                matches = get_matches(st.session_state.session_id, entite_selectionnee)
-                suspens = get_suspens(st.session_state.session_id, entite_selectionnee)
+                stats_entite = get_stats_for_entite(st.session_state.session_id, entite_selectionnee)
+                nb_matches = stats_entite.get('nb_matches', 0)
+                nb_suspens = stats_entite.get('nb_suspens', 0)
+            total = nb_matches + nb_suspens
+            taux = round(nb_matches / max(total, 1) * 100, 1)
 
-                # Statistiques
-                stats = get_stats_for_entite(st.session_state.session_id, entite_selectionnee)
-                nb_matches = stats.get('nb_matches', 0)
-                nb_suspens = stats.get('nb_suspens', 0)
-                total = nb_matches + nb_suspens
-                taux = round(nb_matches / max(total, 1) * 100, 1)
-
-                # Nombre de lignes relevés pour cette entité
-                mappages = get_all_mappages(st.session_state.session_id)
-                lignes_releves_entite = 0
-                for m in mappages:
-                    if m['entite_assignee'] == entite_selectionnee and m['releve_name'] in st.session_state.releves:
-                        lignes_releves_entite += len(st.session_state.releves[m['releve_name']])
-
-                # SECTION A: STATISTIQUES
-                st.subheader("📈 Statistiques")
-                col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+            # SECTION A: STATISTIQUES
+            st.subheader("📈 Statistiques")
+            if is_non_determinee:
+                col_s1, col_s2 = st.columns(2)
                 with col_s1:
-                    st.metric("📋 Lignes relevés", lignes_releves_entite)
+                    st.metric("❓ Opérations non déterminées", nb_suspens)
                 with col_s2:
+                    st.caption(
+                        "Ces opérations de relevé n'ont correspondu à aucun des 4 GL. "
+                        "Assignez-les manuellement à la bonne entité ci-dessous si vous "
+                        "la connaissez (l'écriture correspondante devra ensuite être "
+                        "recherchée dans le GL de cette entité)."
+                    )
+            else:
+                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+                with col_s1:
                     st.metric("📝 Écritures GL", len(gl_df))
-                with col_s3:
+                with col_s2:
                     st.metric("✅ Appairés", nb_matches)
-                with col_s4:
+                with col_s3:
                     st.metric("⚠️ Suspens", nb_suspens)
-                with col_s5:
+                with col_s4:
                     st.metric("🎯 Taux", f"{taux}%")
 
-                # Répartition par type de match
-                if stats.get('matches_par_type'):
-                    st.caption("Répartition par type de match: " +
-                              " | ".join([f"{k}: {v}" for k, v in stats['matches_par_type'].items()]))
+                if not is_non_determinee:
+                    stats_entite = get_stats_for_entite(st.session_state.session_id, entite_selectionnee)
+                    if stats_entite.get('matches_par_type'):
+                        st.caption("Répartition par type de match: " +
+                                  " | ".join([f"{k}: {v}" for k, v in stats_entite['matches_par_type'].items()]))
 
-                st.divider()
+            st.divider()
 
-                # SECTION B: APPAIRAGES VALIDÉS
+            # SECTION B: APPAIRAGES VALIDÉS
+            if not is_non_determinee:
                 st.subheader("✅ Appairages Validés")
                 if matches:
                     df_matches = pd.DataFrame(matches)
@@ -505,7 +563,6 @@ with tabs[2]:
                     display_cols = [c for c in display_cols if c in df_matches.columns]
 
                     if not df_matches.empty:
-                        # Formater pour l'affichage
                         df_display = df_matches[display_cols].copy()
                         if 'montant' in df_display.columns:
                             df_display['montant'] = df_display['montant'].apply(
@@ -520,89 +577,107 @@ with tabs[2]:
                         df_display.columns = ['Date', 'Banque', 'Libellé', 'Montant', 'Type', 'Confiance']
                         st.dataframe(df_display, use_container_width=True, height=300)
                 else:
-                    st.info("Aucun appairage pour le moment. Lancez le matching.")
+                    st.info("Aucun appairage pour le moment. Lancez le rapprochement (onglet 2).")
 
                 st.divider()
 
-                # SECTION C: SUSPENS À INVESTIGUER
-                st.subheader("⚠️ Suspens à Investiguer")
-                if suspens:
-                    for s in suspens:
-                        with st.expander(f"🔴 {formater_date(s.get('date_operation', ''))} | "
-                                       f"{s.get('libelle', '')[:60]}... | "
-                                       f"{formater_montant(s.get('montant', 0))}"):
+            # SECTION C: SUSPENS À INVESTIGUER
+            titre_suspens = "❓ Opérations non attribuées à investiguer" if is_non_determinee else "⚠️ Suspens à Investiguer"
+            st.subheader(titre_suspens)
+            if suspens:
+                for s in suspens:
+                    with st.expander(f"🔴 {formater_date(s.get('date_operation', ''))} | "
+                                   f"{s.get('libelle', '')[:60]}... | "
+                                   f"{formater_montant(s.get('montant', 0))}"):
 
-                            col_d1, col_d2 = st.columns(2)
-                            with col_d1:
-                                st.write(f"**Date:** {formater_date(s.get('date_operation', ''))}")
-                                st.write(f"**Type:** {s.get('type_suspens', '')}")
-                                st.write(f"**Source:** {s.get('source', '')}")
-                                st.write(f"**Libellé:** {s.get('libelle', '')}")
-                            with col_d2:
-                                st.write(f"**Montant:** {formater_montant(s.get('montant', 0))}")
-                                st.write(f"**Banque:** {s.get('banque', '')}")
-                                st.write(f"**Statut:** {s.get('statut', 'Ouvert')}")
+                        col_d1, col_d2 = st.columns(2)
+                        with col_d1:
+                            st.write(f"**Date:** {formater_date(s.get('date_operation', ''))}")
+                            st.write(f"**Type:** {s.get('type_suspens', '')}")
+                            st.write(f"**Source:** {s.get('source', '')}")
+                            st.write(f"**Libellé:** {s.get('libelle', '')}")
+                        with col_d2:
+                            st.write(f"**Montant:** {formater_montant(s.get('montant', 0))}")
+                            st.write(f"**Banque:** {s.get('banque', '')}")
+                            st.write(f"**Statut:** {s.get('statut', 'Ouvert')}")
 
-                            # Sélecteur de motif
-                            motifs = [
-                                "À éclaircir",
-                                "Chèque en attente",
-                                "Virement futur",
-                                "Erreur GL",
-                                "Erreur Relevé",
-                                "Reversal",
-                                "Autre"
-                            ]
-
-                            idx_motif = 0
-                            if s.get('motif') in motifs:
-                                idx_motif = motifs.index(s['motif'])
-
-                            nouveau_motif = st.selectbox(
-                                "Motif",
-                                options=motifs,
-                                index=idx_motif,
-                                key=f"motif_{s['suspens_id']}"
+                        # Réattribution manuelle d'entité — uniquement pertinent pour les
+                        # opérations de relevé (une écriture GL appartient déjà à une
+                        # entité fixe, celle du fichier GL dont elle provient)
+                        nouvelle_entite = entite_selectionnee
+                        if s.get('type_suspens') == 'RELEVE_SEUL':
+                            options_entite = ENTITES_GL + [NON_DETERMINEE]
+                            idx_entite = options_entite.index(entite_selectionnee) if entite_selectionnee in options_entite else len(options_entite) - 1
+                            nouvelle_entite = st.selectbox(
+                                "Entité (réattribuer si vous la connaissez)",
+                                options=options_entite,
+                                format_func=lambda e: f"❓ {e}" if e == NON_DETERMINEE else e,
+                                index=idx_entite,
+                                key=f"entite_{s['suspens_id']}"
                             )
 
-                            observations = st.text_area(
-                                "Observations",
-                                value=s.get('observations', ''),
-                                key=f"obs_{s['suspens_id']}"
-                            )
+                        # Sélecteur de motif
+                        motifs = [
+                            "À éclaircir",
+                            "Chèque en attente",
+                            "Virement futur",
+                            "Erreur GL",
+                            "Erreur Relevé",
+                            "Reversal",
+                            "Autre"
+                        ]
 
-                            nouveau_statut = st.selectbox(
-                                "Statut",
-                                options=["Ouvert", "Pointé"],
-                                index=0 if s.get('statut') == 'Ouvert' else 1,
-                                key=f"statut_{s['suspens_id']}"
-                            )
+                        idx_motif = 0
+                        if s.get('motif') in motifs:
+                            idx_motif = motifs.index(s['motif'])
 
-                            col_btn1, col_btn2 = st.columns([1, 1])
-                            with col_btn1:
-                                if st.button("💾 Sauvegarder", key=f"save_{s['suspens_id']}"):
-                                    update_suspens(
-                                        s['suspens_id'],
-                                        motif=nouveau_motif,
-                                        observations=observations,
-                                        statut=nouveau_statut
-                                    )
-                                    add_history(st.session_state.session_id, "SUSPENS_MODIFIÉ",
-                                              entite_selectionnee,
-                                              f"Suspens #{s['suspens_id']}: {nouveau_motif}")
-                                    st.success("✅ Sauvegardé!")
-                                    st.rerun()
-                            with col_btn2:
-                                if st.button("❌ Supprimer", key=f"del_{s['suspens_id']}"):
-                                    delete_suspens(s['suspens_id'])
-                                    add_history(st.session_state.session_id, "SUSPENS_SUPPRIMÉ",
-                                              entite_selectionnee, f"Suspens #{s['suspens_id']}")
-                                    st.rerun()
+                        nouveau_motif = st.selectbox(
+                            "Motif",
+                            options=motifs,
+                            index=idx_motif,
+                            key=f"motif_{s['suspens_id']}"
+                        )
+
+                        observations = st.text_area(
+                            "Observations",
+                            value=s.get('observations', ''),
+                            key=f"obs_{s['suspens_id']}"
+                        )
+
+                        nouveau_statut = st.selectbox(
+                            "Statut",
+                            options=["Ouvert", "Pointé"],
+                            index=0 if s.get('statut') == 'Ouvert' else 1,
+                            key=f"statut_{s['suspens_id']}"
+                        )
+
+                        col_btn1, col_btn2 = st.columns([1, 1])
+                        with col_btn1:
+                            if st.button("💾 Sauvegarder", key=f"save_{s['suspens_id']}"):
+                                update_suspens(
+                                    s['suspens_id'],
+                                    motif=nouveau_motif,
+                                    observations=observations,
+                                    statut=nouveau_statut,
+                                    entite=nouvelle_entite if nouvelle_entite != entite_selectionnee else None
+                                )
+                                add_history(st.session_state.session_id, "SUSPENS_MODIFIÉ",
+                                          nouvelle_entite,
+                                          f"Suspens #{s['suspens_id']}: {nouveau_motif}"
+                                          + (f" (réattribué à {nouvelle_entite})" if nouvelle_entite != entite_selectionnee else ""))
+                                st.success("✅ Sauvegardé!")
+                                st.rerun()
+                        with col_btn2:
+                            if st.button("❌ Supprimer", key=f"del_{s['suspens_id']}"):
+                                delete_suspens(s['suspens_id'])
+                                add_history(st.session_state.session_id, "SUSPENS_SUPPRIMÉ",
+                                          entite_selectionnee, f"Suspens #{s['suspens_id']}")
+                                st.rerun()
+            else:
+                if matches or is_non_determinee:
+                    st.success("🎉 Aucun suspens! Toutes les opérations sont appairées.")
                 else:
-                    if matches:
-                        st.success("🎉 Aucun suspens! Toutes les opérations sont appairées.")
-                    else:
-                        st.info("Aucune donnée. Lancez le matching pour voir les résultats.")
+                    st.info("Aucune donnée. Lancez le rapprochement (onglet 2) pour voir les résultats.")
 
 
 # ============================================================
@@ -618,8 +693,16 @@ with tabs[3]:
 
         # Tableau de synthèse
         st.subheader("Vue d'ensemble des 4 entités")
+        st.caption(
+            "L'entité de chaque opération est déterminée automatiquement lors du "
+            "rapprochement (onglet 2) — un même relevé peut contribuer à plusieurs "
+            "entités à la fois."
+        )
 
-        entites = ['DISTRIBUTION', 'NUTRITION', 'SERVICES', 'ÉLEVAGE']
+        total_lignes_relevé = sum(len(df) for df in st.session_state.releves.values() if df is not None)
+        st.metric("📋 Total lignes de relevé chargées (toutes banques confondues)", total_lignes_relevé)
+
+        entites = ENTITES_GL
         synth_data = []
 
         for entite in entites:
@@ -628,38 +711,33 @@ with tabs[3]:
             total = nb_matches + nb_suspens
             taux = round(nb_matches / max(total, 1) * 100, 1) if total > 0 else 0
 
-            # Compter les lignes relevés pour cette entité
-            mappages = get_all_mappages(st.session_state.session_id)
-            lignes_releves = 0
-            banques = set()
-            for m in mappages:
-                if m['entite_assignee'] == entite and m['releve_name'] in st.session_state.releves:
-                    lignes_releves += len(st.session_state.releves[m['releve_name']])
-                    banques.add(m.get('banque', ''))
-
             synth_data.append({
                 'Entité': entite,
-                'Relevés': lignes_releves,
-                'Banques': ', '.join(sorted(banques)) if banques else '-',
                 'Appairés': nb_matches,
-                'Suspens': nb_suspens,
+                'Suspens (GL orphelin)': nb_suspens,
                 'Total': total,
                 '% OK': f"{taux}%"
             })
 
+        nb_non_determinees = stats.get('suspens_par_entite', {}).get(NON_DETERMINEE, 0)
+        synth_data.append({
+            'Entité': '❓ Non déterminée',
+            'Appairés': 0,
+            'Suspens (GL orphelin)': nb_non_determinees,
+            'Total': nb_non_determinees,
+            '% OK': '0%'
+        })
+
         # Total
-        total_releves = sum(row['Relevés'] for row in synth_data)
         total_matches = sum(row['Appairés'] for row in synth_data)
-        total_suspens = sum(row['Suspens'] for row in synth_data)
+        total_suspens = sum(row['Suspens (GL orphelin)'] for row in synth_data)
         total_global = total_matches + total_suspens
         taux_global = round(total_matches / max(total_global, 1) * 100, 1)
 
         synth_data.append({
             'Entité': '**TOTAL GROUPE**',
-            'Relevés': total_releves,
-            'Banques': '-',
             'Appairés': total_matches,
-            'Suspens': total_suspens,
+            'Suspens (GL orphelin)': total_suspens,
             'Total': total_global,
             '% OK': f"{taux_global}%"
         })
@@ -716,9 +794,10 @@ with tabs[3]:
 
         # Détail des suspens par entité
         st.subheader("📋 Détail des suspens par entité")
-        tab_entites = st.tabs(entites)
+        entites_detail = entites + [NON_DETERMINEE]
+        tab_entites = st.tabs([f"❓ {e}" if e == NON_DETERMINEE else e for e in entites_detail])
 
-        for i, entite in enumerate(entites):
+        for i, entite in enumerate(entites_detail):
             with tab_entites[i]:
                 suspens = get_suspens(st.session_state.session_id, entite)
                 if suspens:
@@ -752,7 +831,7 @@ with tabs[4]:
 
         if total_matches == 0:
             st.warning("⚠️ Aucun résultat de rapprochement trouvé. "
-                      "Veillez à mapper les relevés (onglet 2) et lancer le matching (onglet 3).")
+                      "Rendez-vous à l'onglet 2 pour lancer le rapprochement.")
         else:
             st.success(f"✅ {total_matches} appairages et {stats.get('total_suspens', 0)} suspens disponibles pour export.")
 
